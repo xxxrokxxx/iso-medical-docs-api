@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API endpoint (default to 0.0.0.0:8001, can be overridden by environment variable)
-API_URL = os.getenv("API_URL", "http://0.0.0.0:8001")
+API_URL = os.getenv("API_URL", "http://localhost:8080")
 
 
 def format_sources(sources: List[dict]) -> str:
