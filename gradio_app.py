@@ -11,34 +11,38 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# API endpoint (default to 0.0.0.0:8001, can be overridden by environment variable)
+# API endpoint (default to localhost:8080, can be overridden by environment variable)
 API_URL = os.getenv("API_URL", "http://localhost:8080")
 
 
 def format_sources(sources: List[dict]) -> str:
     """Format source documents for display"""
     if not sources:
-        return "\n\n**No sources available**"
+        return "No sources available"
     
-    formatted = "\n\n### 📚 Sources:\n\n"
+    formatted = ""
     for i, source in enumerate(sources, 1):
         title = source.get("title", "Unknown")
         distance = source.get("distance", 0)
         similarity = (1 - distance) * 100  # Convert distance to similarity percentage
-        text_preview = source.get("text", "")[:200] + "..." if len(source.get("text", "")) > 200 else source.get("text", "")
+        text_preview = source.get("text", "")[:300] + "..." if len(source.get("text", "")) > 300 else source.get("text", "")
+        source_file = source.get("source", "Unknown source")
         
-        formatted += f"**{i}. {title}** (Relevance: {similarity:.1f}%)\n"
-        formatted += f"> {text_preview}\n\n"
+        formatted += f"### Source {i}: {title}\n"
+        formatted += f"**Relevance:** {similarity:.1f}%\n\n"
+        formatted += f"{text_preview}\n\n"
+        formatted += f"*File: {source_file}*\n\n"
+        formatted += "---\n\n"
     
     return formatted
 
 
-def query_api(question: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]]]:
+def query_api(question: str, history: List[Tuple[str, str]]) -> Tuple[str, List[Tuple[str, str]], str]:
     """
-    Query the FastAPI backend and return the answer with sources.
+    Query the FastAPI backend and return the answer with sources separately.
     """
     if not question.strip():
-        return "", history
+        return "", history, ""
     
     try:
         # Make request to FastAPI backend
@@ -53,32 +57,32 @@ def query_api(question: str, history: List[Tuple[str, str]]) -> Tuple[str, List[
             answer = data.get("answer", "No answer generated")
             sources = data.get("sources", [])
             
-            # Format response with sources
-            full_response = answer + format_sources(sources)
+            # Format sources separately
+            sources_text = format_sources(sources)
             
-            # Update history
-            history.append((question, full_response))
+            # Update chat history with just the answer
+            history.append((question, answer))
             
-            return "", history
+            return "", history, sources_text
         else:
             error_msg = f"❌ Error: {response.status_code} - {response.text}"
             history.append((question, error_msg))
-            return "", history
+            return "", history, ""
             
     except requests.exceptions.Timeout:
         error_msg = "⏱️ Request timed out. The query is taking too long. Please try again."
         history.append((question, error_msg))
-        return "", history
+        return "", history, ""
         
     except requests.exceptions.ConnectionError:
         error_msg = f"🔌 Cannot connect to API at {API_URL}. Make sure the backend is running."
         history.append((question, error_msg))
-        return "", history
+        return "", history, ""
         
     except Exception as e:
         error_msg = f"❌ Error: {str(e)}"
         history.append((question, error_msg))
-        return "", history
+        return "", history, ""
 
 
 def search_documents(query: str, limit: int = 5) -> str:
@@ -132,10 +136,14 @@ def check_api_status() -> str:
             weaviate_ready = data.get("weaviate_ready", False)
             collection_available = data.get("collection_available", False)
             
-            if status == "healthy":
-                return "✅ API is running and healthy"
-            else:
-                return f"⚠️ API Status: {status}\n- Weaviate: {'✓' if weaviate_ready else '✗'}\n- Collection: {'✓' if collection_available else '✗'}"
+            status_text = f"""### API Status: {'✅ Healthy' if status == 'healthy' else '⚠️ ' + status}
+
+**Backend:** {API_URL}
+**Weaviate:** {'✅ Connected' if weaviate_ready else '❌ Not connected'}
+**Collection:** {'✅ Available' if collection_available else '❌ Not available'}
+**Documents:** ~4,000 indexed chunks
+"""
+            return status_text
         else:
             return f"❌ API returned status code: {response.status_code}"
     except Exception as e:
@@ -148,7 +156,7 @@ with gr.Blocks(
     theme=gr.themes.Soft(),
     css="""
         .gradio-container {font-family: 'Arial', sans-serif;}
-        .chatbot {height: 500px !important;}
+        .info-box {background-color: #f0f7ff; padding: 15px; border-radius: 8px; margin-bottom: 20px;}
     """
 ) as demo:
     
@@ -156,86 +164,84 @@ with gr.Blocks(
         """
         # 🏥 ISO Medical Device Documents Assistant
         
-        Ask questions about ISO standards and medical device regulations. 
-        The assistant uses RAG (Retrieval Augmented Generation) to provide accurate answers based on:
+        Ask questions about ISO standards and medical device regulations using AI-powered search.
         
-        - ISO 13485 (Quality Management)
-        - ISO 14971 (Risk Management)
-        - ISO 14155 (Clinical Investigation)
-        - ISO 62304 (Medical Device Software)
-        - ISO 15223-1 (Symbols)
-        - EU MDR 2017/745
-        - MDCG Guidance Documents
-        """
+        **💡 Tip:** Ask specific questions for better results. Every answer includes source references.
+        """,
+        elem_classes="info-box"
     )
     
-    # Status indicator
-    with gr.Row():
-        status_box = gr.Textbox(
-            label="API Status",
-            value=check_api_status(),
-            interactive=False,
-            lines=2
-        )
-        refresh_btn = gr.Button("🔄 Refresh Status", size="sm")
-    
-    refresh_btn.click(fn=check_api_status, outputs=status_box)
-    
-    # Main chat interface
+    # Main tabs
     with gr.Tab("💬 Chat Assistant"):
-        chatbot = gr.Chatbot(
-            label="ISO Documents Assistant",
-            height=500,
-            bubble_full_width=False,
-            avatar_images=(None, "🤖")
-        )
-        
         with gr.Row():
-            question_input = gr.Textbox(
-                label="Ask a question",
-                placeholder="e.g., What are the requirements for risk management in medical devices?",
-                lines=2,
-                scale=4
-            )
-            submit_btn = gr.Button("Send", variant="primary", scale=1)
-        
-        gr.Examples(
-            examples=[
-                "What are the key requirements for medical device software according to ISO 62304?",
-                "What is the difference between Class I and Class III medical devices?",
-                "What are the clinical investigation requirements for medical devices?",
-                "Explain the risk management process according to ISO 14971",
-                "What documentation is required for CE marking under EU MDR?"
-            ],
-            inputs=question_input,
-            label="Example Questions"
-        )
-        
-        clear_btn = gr.Button("🗑️ Clear Chat")
+            # Left column - Chat
+            with gr.Column(scale=2):
+                gr.Markdown("### Ask Your Question")
+                
+                chatbot = gr.Chatbot(
+                    label="Conversation",
+                    height=400,
+                    show_copy_button=True
+                )
+                
+                with gr.Row():
+                    question_input = gr.Textbox(
+                        label="Your Question",
+                        placeholder="e.g., What are the key requirements for risk management in medical devices?",
+                        lines=2,
+                        scale=4
+                    )
+                    submit_btn = gr.Button("Send", variant="primary", scale=1)
+                
+                clear_btn = gr.Button("🗑️ Clear Chat", size="sm")
+                
+                gr.Markdown("### Example Questions")
+                gr.Examples(
+                    examples=[
+                        "What are the key requirements for medical device software according to ISO 62304?",
+                        "What is the difference between Class I and Class III medical devices?",
+                        "What are the clinical investigation requirements for medical devices?",
+                        "Explain the risk management process according to ISO 14971",
+                        "What documentation is required for CE marking under EU MDR?"
+                    ],
+                    inputs=question_input,
+                )
+            
+            # Right column - References
+            with gr.Column(scale=1):
+                gr.Markdown("### 📖 Source References")
+                sources_output = gr.Markdown(
+                    value="*Sources will appear here after you ask a question*",
+                    label="References"
+                )
         
         # Set up event handlers
         submit_btn.click(
             fn=query_api,
             inputs=[question_input, chatbot],
-            outputs=[question_input, chatbot]
+            outputs=[question_input, chatbot, sources_output]
         )
         
         question_input.submit(
             fn=query_api,
             inputs=[question_input, chatbot],
-            outputs=[question_input, chatbot]
+            outputs=[question_input, chatbot, sources_output]
         )
         
-        clear_btn.click(fn=lambda: [], outputs=chatbot)
+        clear_btn.click(
+            fn=lambda: ([], "*Sources will appear here after you ask a question*"),
+            outputs=[chatbot, sources_output]
+        )
     
     # Search interface
     with gr.Tab("🔍 Search Documents"):
-        gr.Markdown("Search for specific topics in the ISO documents using semantic search.")
+        gr.Markdown("### Semantic Search")
+        gr.Markdown("Search for specific topics across all ISO documents using semantic similarity.")
         
         with gr.Row():
             search_input = gr.Textbox(
                 label="Search Query",
-                placeholder="e.g., software validation",
+                placeholder="e.g., software validation, risk assessment, clinical trials",
                 lines=1,
                 scale=3
             )
@@ -263,41 +269,72 @@ with gr.Blocks(
             outputs=search_output
         )
     
-    # Info tab
+    # About tab
     with gr.Tab("ℹ️ About"):
-        gr.Markdown(
-            """
-            ## About This Application
-            
-            This chatbot provides intelligent access to ISO medical device standards and regulations.
-            
-            ### Features:
-            - **RAG-Powered Answers**: Uses Retrieval Augmented Generation for accurate responses
-            - **Source Citations**: Every answer includes references to source documents
-            - **Semantic Search**: Find relevant information across all documents
-            - **GPT-4o Integration**: Powered by OpenAI's latest model
-            
-            ### Technology Stack:
-            - **Backend**: FastAPI with Weaviate vector database
-            - **Embeddings**: OpenAI text-embedding-3-large
-            - **LLM**: GPT-4o
-            - **Frontend**: Gradio
-            
-            ### Available Documents:
-            - ISO 13485:2016 - Quality Management Systems
-            - ISO 14971:2019 - Risk Management
-            - ISO 14155:2020 - Clinical Investigation
-            - ISO 62304:2006 - Medical Device Software
-            - ISO 15223-1:2021 - Symbols for Medical Devices
-            - EU MDR 2017/745 - Medical Device Regulation
-            - MDCG 2020-3 - Clinical Evaluation Guidelines
-            
-            ### Notes:
-            - Responses are based on the content of indexed documents
-            - Always verify critical compliance information with official standards
-            - The system processes ~4,000 document chunks for comprehensive coverage
-            """
-        )
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown(
+                    """
+                    ## About This Application
+                    
+                    This intelligent chatbot provides access to ISO medical device standards and regulations 
+                    using advanced AI technology.
+                    
+                    ### 📚 Available Standards
+                    
+                    This assistant provides answers based on the following ISO standards and regulations:
+                    
+                    - **ISO 13485** - Quality Management Systems
+                    - **ISO 14971** - Risk Management for Medical Devices
+                    - **ISO 14155** - Clinical Investigation of Medical Devices
+                    - **ISO 62304** - Medical Device Software Life Cycle Processes
+                    - **ISO 15223-1** - Symbols to be Used with Information
+                    - **EU MDR 2017/745** - Medical Device Regulation
+                    - **MDCG 2020-3** - Clinical Evaluation Guidelines
+                    
+                    ### 🎯 Features
+                    
+                    - **RAG-Powered Answers**: Retrieval Augmented Generation ensures accuracy
+                    - **Source Citations**: Every answer includes document references
+                    - **Semantic Search**: Find information using natural language
+                    - **4,000+ Document Chunks**: Comprehensive coverage of standards
+                    - **Real-time Responses**: Powered by GPT-4o
+                    
+                    ### 🛠️ Technology Stack
+                    
+                    - **Backend**: FastAPI + Weaviate Vector Database
+                    - **Embeddings**: OpenAI text-embedding-3-large
+                    - **LLM**: GPT-4o (OpenAI)
+                    - **Frontend**: Gradio
+                    - **Deployment**: Google Cloud Run
+                    
+                    ### ⚠️ Important Notes
+                    
+                    - Responses are based on indexed document content
+                    - Always verify critical compliance information with official standards
+                    - This tool is for informational purposes
+                    - Last updated: October 2025
+                    
+                    ### 📊 API Status
+                    """
+                )
+                
+                status_output = gr.Markdown(value=check_api_status())
+                refresh_status_btn = gr.Button("🔄 Refresh API Status")
+                
+                refresh_status_btn.click(fn=check_api_status, outputs=status_output)
+                
+                gr.Markdown(
+                    """
+                    ---
+                    
+                    ### 🔗 Resources
+                    
+                    - [ISO Official Website](https://www.iso.org)
+                    - [EU MDR Portal](https://ec.europa.eu/health/md_sector/overview_en)
+                    - [GitHub Repository](https://github.com/xxxrokxxx/iso-medical-docs-api)
+                    """
+                )
 
 
 if __name__ == "__main__":
